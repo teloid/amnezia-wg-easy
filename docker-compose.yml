@@ -1,17 +1,32 @@
 volumes:
   etc_wireguard:
+  prometheus_data:
 
 services:
   amnezia-wg-easy:
     env_file:
       - .env
-    image: ghcr.io/w0rng/amnezia-wg-easy
+    image: ${WG_EASY_IMAGE:-teloid/python_hobby:amnezia-wg-easy-beta}
     container_name: amnezia-wg-easy
+    environment:
+      WG_HOST: ${WG_HOST:-}
+      PASSWORD_HASH: ${PASSWORD_HASH:-}
+      LANG: ${WG_EASY_UI_LANG:-en}
+      PORT: ${PORT:-51821}
+      WG_DEVICE: ${WG_DEVICE:-eth0}
+      WG_PORT: ${WG_PORT:-51820}
+      WG_DEFAULT_ADDRESS: ${WG_DEFAULT_ADDRESS:-10.8.0.x}
+      WG_DEFAULT_DNS: ${WG_DEFAULT_DNS:-1.1.1.1}
+      WG_ALLOWED_IPS: "${WG_ALLOWED_IPS:-0.0.0.0/0, ::/0}"
+      DICEBEAR_TYPE: ${DICEBEAR_TYPE:-bottts}
+      USE_GRAVATAR: ${USE_GRAVATAR:-true}
+      ENABLE_PROMETHEUS_METRICS: ${ENABLE_PROMETHEUS_METRICS:-true}
+      PROMETHEUS_METRICS_PASSWORD: ${PROMETHEUS_METRICS_PASSWORD:-}
     volumes:
-      - etc_wireguard:/etc/wireguard
+      - ${WG_DATA_PATH:-~/.amnezia-wg-easy}:/etc/wireguard
     ports:
-      - "${WG_PORT}:${WG_PORT}/udp"
-      - "${PORT}:${PORT}/tcp"
+      - "${WG_PORT:-51820}:${WG_PORT:-51820}/udp"
+      - "${PORT:-51821}:${PORT:-51821}/tcp"
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -21,4 +36,237 @@ services:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
     devices:
-    - /dev/net/tun:/dev/net/tun
+      - /dev/net/tun:/dev/net/tun
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:latest}
+    container_name: prometheus
+    environment:
+      - PROMETHEUS_SCRAPE_INTERVAL=${PROMETHEUS_SCRAPE_INTERVAL:-15s}
+      - PROMETHEUS_TARGET=amnezia-wg-easy:${PORT:-51821}
+      # Optional: set if /metrics endpoint is protected by basic auth.
+      - PROMETHEUS_SCRAPE_USERNAME=${PROMETHEUS_SCRAPE_USERNAME:-}
+      - PROMETHEUS_SCRAPE_PASSWORD=${PROMETHEUS_SCRAPE_PASSWORD:-}
+      # Optional: protect Prometheus UI/API itself.
+      - PROMETHEUS_WEB_USERNAME=${PROMETHEUS_WEB_USERNAME:-admin}
+      - PROMETHEUS_WEB_PASSWORD_HASH=${PROMETHEUS_WEB_PASSWORD_HASH:-}
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        SCRAPE_INTERVAL="$${PROMETHEUS_SCRAPE_INTERVAL:-15s}"
+        TARGET="$${PROMETHEUS_TARGET:-amnezia-wg-easy:51821}"
+
+        cat > /tmp/prometheus.yml <<EOF
+        global:
+          scrape_interval: $${SCRAPE_INTERVAL}
+        rule_files:
+          - /tmp/rules.yml
+        scrape_configs:
+          - job_name: amnezia-wg-easy
+            metrics_path: /metrics
+        EOF
+
+        if [ -n "$${PROMETHEUS_SCRAPE_USERNAME:-}" ] && [ -n "$${PROMETHEUS_SCRAPE_PASSWORD:-}" ]; then
+          cat >> /tmp/prometheus.yml <<EOF
+            basic_auth:
+              username: $${PROMETHEUS_SCRAPE_USERNAME}
+              password: $${PROMETHEUS_SCRAPE_PASSWORD}
+        EOF
+        fi
+
+        cat >> /tmp/prometheus.yml <<EOF
+            static_configs:
+              - targets:
+                  - $${TARGET}
+        EOF
+
+        cat > /tmp/rules.yml <<'EOF'
+        groups:
+          - name: wireguard_recording_rules
+            interval: 30s
+            rules:
+              - record: wg:peers:configured
+                expr: wireguard_configured_peers{interface="wg0"}
+              - record: wg:peers:enabled
+                expr: wireguard_enabled_peers{interface="wg0"}
+              - record: wg:peers:connected
+                expr: wireguard_connected_peers{interface="wg0"}
+              - record: wg:peer:rx_rate_bps_5m
+                expr: rate(wireguard_received_bytes{interface="wg0"}[5m])
+              - record: wg:peer:tx_rate_bps_5m
+                expr: rate(wireguard_sent_bytes{interface="wg0"}[5m])
+              - record: wg:peer:total_rate_bps_5m
+                expr: rate(wireguard_received_bytes{interface="wg0"}[5m]) + rate(wireguard_sent_bytes{interface="wg0"}[5m])
+              - record: wg:peer:rx_24h_bytes
+                expr: increase(wireguard_received_bytes{interface="wg0"}[24h])
+              - record: wg:peer:tx_24h_bytes
+                expr: increase(wireguard_sent_bytes{interface="wg0"}[24h])
+              - record: wg:peer:total_24h_bytes
+                expr: increase(wireguard_received_bytes{interface="wg0"}[24h]) + increase(wireguard_sent_bytes{interface="wg0"}[24h])
+              - record: wg:peer:last_handshake_age_seconds
+                expr: clamp_min(time() - wireguard_latest_handshake_seconds{interface="wg0"}, 0)
+              - record: wg:peer:active_5m
+                expr: (time() - wireguard_latest_handshake_seconds{interface="wg0"}) < bool 300
+              - record: wg:total:rx_rate_bps_5m
+                expr: sum(rate(wireguard_received_bytes{interface="wg0"}[5m]))
+              - record: wg:total:tx_rate_bps_5m
+                expr: sum(rate(wireguard_sent_bytes{interface="wg0"}[5m]))
+              - record: wg:total:traffic_rate_bps_5m
+                expr: sum(rate(wireguard_received_bytes{interface="wg0"}[5m])) + sum(rate(wireguard_sent_bytes{interface="wg0"}[5m]))
+              - record: wg:total:rx_bytes
+                expr: sum(wireguard_received_bytes{interface="wg0"})
+              - record: wg:total:tx_bytes
+                expr: sum(wireguard_sent_bytes{interface="wg0"})
+              - record: wg:total:bytes
+                expr: sum(wireguard_received_bytes{interface="wg0"}) + sum(wireguard_sent_bytes{interface="wg0"})
+              - record: wg:total:rx_24h_bytes
+                expr: sum(increase(wireguard_received_bytes{interface="wg0"}[24h]))
+              - record: wg:total:tx_24h_bytes
+                expr: sum(increase(wireguard_sent_bytes{interface="wg0"}[24h]))
+              - record: wg:total:24h_bytes
+                expr: sum(increase(wireguard_received_bytes{interface="wg0"}[24h])) + sum(increase(wireguard_sent_bytes{interface="wg0"}[24h]))
+
+          - name: wireguard_alerting_rules
+            interval: 30s
+            rules:
+              - alert: WireGuardMetricsTargetDown
+                expr: up{job="amnezia-wg-easy"} == 0
+                for: 2m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "WireGuard metrics target is down"
+                  description: "Prometheus cannot scrape amnezia-wg-easy metrics endpoint."
+
+              - alert: WireGuardMetricsMissing
+                expr: absent(wireguard_configured_peers{interface="wg0"})
+                for: 5m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "WireGuard metrics are missing"
+                  description: "No wireguard_configured_peers metric detected for wg0."
+
+              - alert: WireGuardNoConfiguredPeers
+                expr: wg:peers:configured == 0
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "No configured peers"
+                  description: "No WireGuard peers are currently configured."
+
+              - alert: WireGuardNoEnabledPeers
+                expr: wg:peers:enabled == 0
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "No enabled peers"
+                  description: "All WireGuard peers are disabled."
+
+              - alert: WireGuardAllPeersDisconnected
+                expr: (wg:peers:enabled > 0) and (wg:peers:connected == 0)
+                for: 10m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "All enabled peers are disconnected"
+                  description: "Enabled peers exist, but none are connected."
+
+              - alert: WireGuardHighDisconnectRatio
+                expr: (wg:peers:enabled >= 5) and ((wg:peers:enabled - wg:peers:connected) / wg:peers:enabled > 0.8)
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "High peer disconnect ratio"
+                  description: "More than 80% of enabled peers are disconnected."
+
+              - alert: WireGuardConnectedPeersSuddenDrop
+                expr: delta(wireguard_connected_peers{interface="wg0"}[10m]) <= -3
+                for: 2m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Connected peers dropped quickly"
+                  description: "Connected peer count dropped by at least 3 in the last 10 minutes."
+
+              - alert: WireGuardPeerHandshakeNever
+                expr: wireguard_latest_handshake_seconds{interface="wg0",enabled="true"} == 0
+                for: 30m
+                labels:
+                  severity: info
+                annotations:
+                  summary: "Peer never completed a handshake"
+                  description: "Peer {{ $$labels.name }} ({{ $$labels.address }}) has never handshaked."
+
+              - alert: WireGuardPeerHandshakeStale1h
+                expr: (wireguard_latest_handshake_seconds{interface="wg0",enabled="true"} > 0) and ((time() - wireguard_latest_handshake_seconds{interface="wg0",enabled="true"}) > 3600)
+                for: 30m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Peer handshake is stale"
+                  description: "Peer {{ $$labels.name }} has not handshaked for more than 1 hour."
+
+              - alert: WireGuardPeerNoTraffic24h
+                expr: (increase(wireguard_received_bytes{interface="wg0",enabled="true"}[24h]) + increase(wireguard_sent_bytes{interface="wg0",enabled="true"}[24h])) == 0
+                for: 30m
+                labels:
+                  severity: info
+                annotations:
+                  summary: "Peer has no traffic in 24h"
+                  description: "Peer {{ $$labels.name }} transferred no data in the last 24 hours."
+
+              - alert: WireGuardPeerHighTrafficRate
+                expr: (rate(wireguard_received_bytes{interface="wg0"}[5m]) + rate(wireguard_sent_bytes{interface="wg0"}[5m])) > 10000000
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Peer traffic rate is high"
+                  description: "Peer {{ $$labels.name }} is above 10 MB/s average in last 5 minutes."
+
+              - alert: WireGuardTotalTrafficRateHigh
+                expr: wg:total:traffic_rate_bps_5m > 50000000
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Total WireGuard traffic rate is high"
+                  description: "Total traffic is above 50 MB/s in the last 5 minutes."
+
+              - alert: WireGuardTotal24hTrafficHigh
+                expr: wg:total:24h_bytes > 500000000000
+                for: 30m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Total 24h WireGuard traffic is high"
+                  description: "Total transferred bytes in 24h exceeded 500 GB."
+        EOF
+
+        WEB_CONFIG_ARG=""
+        if [ -n "$${PROMETHEUS_WEB_USERNAME:-}" ] && [ -n "$${PROMETHEUS_WEB_PASSWORD_HASH:-}" ]; then
+          cat > /tmp/web.yml <<EOF
+        basic_auth_users:
+          $${PROMETHEUS_WEB_USERNAME}: $${PROMETHEUS_WEB_PASSWORD_HASH}
+        EOF
+          WEB_CONFIG_ARG="--web.config.file=/tmp/web.yml"
+        fi
+
+        exec /bin/prometheus \
+          --config.file=/tmp/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --web.enable-lifecycle \
+          $${WEB_CONFIG_ARG}
+    volumes:
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    restart: unless-stopped
+    depends_on:
+      - amnezia-wg-easy

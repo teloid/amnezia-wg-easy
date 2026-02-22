@@ -73,7 +73,8 @@ To automatically install & run wg-easy, simply run:
 
 The Web UI will now be available on `http://0.0.0.0:51821`.
 
-The Prometheus metrics will now be available on `http://0.0.0.0:51821/metrics`. Grafana dashboard [21733](https://grafana.com/grafana/dashboards/21733-wireguard/)
+The Prometheus metrics will now be available on `http://0.0.0.0:51821/metrics`.  
+If you later add Grafana, you can use dashboard [21733](https://grafana.com/grafana/dashboards/21733-wireguard/).
 
 > 💡 Your configuration files will be saved in `~/.amnezia-wg-easy`
 
@@ -90,7 +91,7 @@ services:
     image: teloid/python_hobby:amnezia-wg-easy
     container_name: amnezia-wg-easy
     environment:
-      - WG_HOST=176.105.253.55
+      - WG_HOST=YOUR_PUBLIC_IP_OR_DNS
       - PASSWORD_HASH=$2y$10$REPLACE_ME
       - LANG=en
       - PORT=51821
@@ -139,6 +140,34 @@ If metrics auth is enabled:
 curl -sS -u any-user:YOUR_METRICS_PASSWORD http://127.0.0.1:51821/metrics | head -n 20
 curl -sS -u any-user:YOUR_METRICS_PASSWORD http://127.0.0.1:51821/metrics/json
 ```
+
+## Prometheus Bundle
+
+`docker-compose.yml` now includes:
+
+* `prometheus`
+
+Start the stack:
+
+```bash
+docker compose up -d
+```
+
+Or start only monitoring on top of an existing VPN container:
+
+```bash
+docker compose up -d prometheus
+```
+
+Access:
+
+* Prometheus: `http://127.0.0.1:${PROMETHEUS_PORT:-9090}`
+
+Notes:
+
+* If `PROMETHEUS_METRICS_PASSWORD` is enabled on wg-easy, also set `PROMETHEUS_SCRAPE_USERNAME` and `PROMETHEUS_SCRAPE_PASSWORD` (plain values) for Prometheus scraping.
+* To protect Prometheus UI/API, set `PROMETHEUS_WEB_USERNAME` and `PROMETHEUS_WEB_PASSWORD_HASH`.
+* `WG_EASY_UI_LANG` controls the language passed to container `LANG` in compose and avoids shell `LANG` leakage.
 
 ## Options
 
