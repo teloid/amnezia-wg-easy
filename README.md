@@ -1,4 +1,4 @@
-# AmnewziaWG Easy
+# AmneziaWG Easy
 
 You have found the easiest way to install & manage WireGuard on any Linux host!
 
@@ -51,6 +51,7 @@ To automatically install & run wg-easy, simply run:
   -e LANG=en \
   -e WG_HOST=<🚨YOUR_SERVER_IP> \
   -e PASSWORD_HASH=<🚨YOUR_ADMIN_PASSWORD_HASH> \
+  -e ENABLE_PROMETHEUS_METRICS=true \
   -e PORT=51821 \
   -e WG_PORT=51820 \
   -v ~/.amnezia-wg-easy:/etc/wireguard \
@@ -68,13 +69,76 @@ To automatically install & run wg-easy, simply run:
 > 💡 Replace `YOUR_SERVER_IP` with your WAN IP, or a Dynamic DNS hostname.
 >
 > 💡 Replace `YOUR_ADMIN_PASSWORD_HASH` with a bcrypt password hash to log in on the Web UI.
-> See [How_to_generate_an_bcrypt_hash.md](./How_to_generate_an_bcrypt_hash.md) for know how generate the hash.
+> See [How_to_generate_an_bcrypt_hash.md](./How_to_generate_an_bcrypt_hash.md) to generate the hash.
 
 The Web UI will now be available on `http://0.0.0.0:51821`.
 
 The Prometheus metrics will now be available on `http://0.0.0.0:51821/metrics`. Grafana dashboard [21733](https://grafana.com/grafana/dashboards/21733-wireguard/)
 
 > 💡 Your configuration files will be saved in `~/.amnezia-wg-easy`
+
+## Docker Stack Setup (Beta)
+
+This matches the stack-based deployment model you described, and keeps the same behavior while fixing metrics:
+
+```yaml
+volumes:
+  etc_wireguard:
+
+services:
+  amnezia-wg-easy:
+    image: teloid/python_hobby:amnezia-wg-easy
+    container_name: amnezia-wg-easy
+    environment:
+      - WG_HOST=176.105.253.55
+      - PASSWORD_HASH=$2y$10$REPLACE_ME
+      - LANG=en
+      - PORT=51821
+      - WG_DEVICE=eth0
+      - WG_PORT=51820
+      - WG_DEFAULT_ADDRESS=10.8.0.x
+      - WG_DEFAULT_DNS=1.1.1.1
+      - WG_ALLOWED_IPS=0.0.0.0/0, ::/0
+      - DICEBEAR_TYPE=bottts
+      - USE_GRAVATAR=true
+      - ENABLE_PROMETHEUS_METRICS=true
+      # Optional metrics basic auth (bcrypt hash):
+      # - PROMETHEUS_METRICS_PASSWORD=$2y$10$REPLACE_ME
+    volumes:
+      - ~/.amnezia-wg-easy:/etc/wireguard
+    ports:
+      - "51820:51820/udp"
+      - "51821:51821/tcp"
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+    devices:
+      - /dev/net/tun:/dev/net/tun
+```
+
+Notes:
+
+* Use `LANG`, not `LANGUAGE`. `LANGUAGE` is ignored by this app.
+* If `ENABLE_PROMETHEUS_METRICS` is not `true`, `/metrics` returns a disabled message and `/metrics/json` returns a JSON error.
+* If `PROMETHEUS_METRICS_PASSWORD` is set, scrape with basic auth credentials.
+
+Metrics smoke test:
+
+```bash
+curl -sS http://127.0.0.1:51821/metrics | head -n 20
+curl -sS http://127.0.0.1:51821/metrics/json
+```
+
+If metrics auth is enabled:
+
+```bash
+curl -sS -u any-user:YOUR_METRICS_PASSWORD http://127.0.0.1:51821/metrics | head -n 20
+curl -sS -u any-user:YOUR_METRICS_PASSWORD http://127.0.0.1:51821/metrics/json
+```
 
 ## Options
 
@@ -84,7 +148,7 @@ These options can be configured by setting environment variables using `-e KEY="
 |-------------------------------|-------------------|--------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `PORT`                        | `51821`           | `6789`                         | TCP port for Web UI.                                                                                                                                                                                                     |
 | `WEBUI_HOST`                  | `0.0.0.0`         | `localhost`                    | IP address web UI binds to.                                                                                                                                                                                              |
-| `PASSWORD_HASH`               | -                 | `$2y$05$Ci...`                 | When set, requires a password when logging in to the Web UI. See [How to generate an bcrypt hash.md]("https://github.com/wg-easy/wg-easy/blob/master/How_to_generate_an_bcrypt_hash.md") for know how generate the hash. |
+| `PASSWORD_HASH`               | -                 | `$2y$05$Ci...`                 | When set, requires a password when logging in to the Web UI. See [How_to_generate_an_bcrypt_hash.md](./How_to_generate_an_bcrypt_hash.md). |
 | `WG_HOST`                     | -                 | `vpn.myserver.com`             | The public hostname of your VPN server.                                                                                                                                                                                  |
 | `WG_DEVICE`                   | `eth0`            | `ens6f0`                       | Ethernet device the wireguard traffic should be forwarded through.                                                                                                                                                       |
 | `WG_PORT`                     | `51820`           | `12345`                        | The public UDP port of your VPN server. WireGuard will listen on that (othwise default) inside the Docker container.                                                                                                     |
@@ -100,6 +164,7 @@ These options can be configured by setting environment variables using `-e KEY="
 | `WG_POST_DOWN`                | `...`             | `iptables ...`                 | See [config.js](https://github.com/wg-easy/wg-easy/blob/master/src/config.js#L28) for the default value.                                                                                                                 |
 | `WG_ENABLE_EXPIRES_TIME`      | `false`           | `true`                         | Enable expire time for clients                                                                                                                                                                                           |
 | `LANG`                        | `en`              | `de`                           | Web UI language (Supports: en, ua, ru, tr, no, pl, fr, de, ca, es, ko, vi, nl, is, pt, chs, cht, it, th, hi).                                                                                                            |
+| `LANGUAGE`                    | -                 | `en`                           | Legacy/ignored variable name. Use `LANG`.                                                                                                                                                                                |
 | `UI_TRAFFIC_STATS`            | `false`           | `true`                         | Enable detailed RX / TX client stats in Web UI                                                                                                                                                                           |
 | `UI_CHART_TYPE`               | `0`               | `1`                            | UI_CHART_TYPE=0 # Charts disabled, UI_CHART_TYPE=1 # Line chart, UI_CHART_TYPE=2 # Area chart, UI_CHART_TYPE=3 # Bar chart                                                                                               |
 | `DICEBEAR_TYPE`               | `false`           | `bottts`                       | see [dicebear types](https://www.dicebear.com/styles/)                                                                                                                                                                   |
@@ -108,7 +173,7 @@ These options can be configured by setting environment variables using `-e KEY="
 | `MAX_AGE`                     | `0`               | `1440`                         | The maximum age of Web UI sessions in minutes. `0` means that the session will exist until the browser is closed.                                                                                                        |
 | `UI_ENABLE_SORT_CLIENTS`      | `false`           | `true`                         | Enable UI sort clients by name                                                                                                                                                                                           |
 | `ENABLE_PROMETHEUS_METRICS`   | `false`           | `true`                         | Enable Prometheus metrics `http://0.0.0.0:51821/metrics` and `http://0.0.0.0:51821/metrics/json`                                                                                                                         |
-| `PROMETHEUS_METRICS_PASSWORD` | -                 | `$2y$05$Ci...`                 | If set, Basic Auth is required when requesting metrics. See [How to generate an bcrypt hash.md]("https://github.com/wg-easy/wg-easy/blob/master/How_to_generate_an_bcrypt_hash.md") for know how generate the hash.      |
+| `PROMETHEUS_METRICS_PASSWORD` | -                 | `$2y$05$Ci...`                 | If set, Basic Auth is required when requesting metrics. See [How_to_generate_an_bcrypt_hash.md](./How_to_generate_an_bcrypt_hash.md).                                                                                    |
 | `JC`                          | `random`          | `5`                            | Junk packet count — number of packets with random data that are sent before the start of the session.                                                                                                                    |
 | `JMIN`                        | `50`              | `25`                           | Junk packet minimum size — minimum packet size for Junk packet. That is, all randomly generated packets will have a size no smaller than Jmin.                                                                           |
 | `JMAX`                        | `1000`            | `250`                          | Junk packet maximum size — maximum size for Junk packets.                                                                                                                                                                |
@@ -132,6 +197,10 @@ docker pull ghcr.io/w0rng/amnezia-wg-easy
 ```
 
 And then run the `docker run -d \ ...` command above again.
+
+If you deploy with your own image tag (for example `teloid/python_hobby:amnezia-wg-easy`), update by rebuilding/pulling that tag and redeploying your stack.
+
+WireGuard protocol-level changes come from `amneziawg-go` and `amneziawg-tools` binaries in the image, not from the Web UI code alone. Rebuild the image regularly to pick up upstream protocol/tooling updates.
 
 ## Thanks
 

@@ -65,6 +65,34 @@ const isPasswordValid = (password, hash) => {
   return false;
 };
 
+const sendJson = (res, statusCode, payload, {
+  wwwAuthenticate = null,
+} = {}) => {
+  res.statusCode = statusCode;
+  if (wwwAuthenticate) {
+    res.setHeader('WWW-Authenticate', wwwAuthenticate);
+  }
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify(payload));
+};
+
+const getPasswordFromAuthorizationHeader = (authorizationHeader) => {
+  if (typeof authorizationHeader !== 'string' || authorizationHeader.length === 0) {
+    return null;
+  }
+
+  try {
+    const credentials = basicAuth.parse(authorizationHeader);
+    if (credentials && typeof credentials.pass === 'string') {
+      return credentials.pass;
+    }
+  } catch (err) {
+    // Fallback to legacy behavior: treat header content as the raw password.
+  }
+
+  return authorizationHeader;
+};
+
 const cronJobEveryMinute = async () => {
   await WireGuard.cronJobEveryMinute();
   setTimeout(cronJobEveryMinute, 60 * 1000);
@@ -131,7 +159,7 @@ module.exports = class Server {
         return {
           dicebear: DICEBEAR_TYPE,
           gravatar: USE_GRAVATAR,
-        }
+        };
       }))
 
       // Authentication
@@ -196,7 +224,8 @@ module.exports = class Server {
     // WireGuard
     app.use(
       fromNodeMiddleware((req, res, next) => {
-        if (!requiresPassword || !req.url.startsWith('/api/')) {
+        const requestUrl = typeof req.url === 'string' ? req.url : '';
+        if (!requiresPassword || !requestUrl.startsWith('/api/')) {
           return next();
         }
 
@@ -204,18 +233,21 @@ module.exports = class Server {
           return next();
         }
 
-        if (req.url.startsWith('/api/') && req.headers['authorization']) {
-          if (isPasswordValid(req.headers['authorization'], PASSWORD_HASH)) {
+        const password = getPasswordFromAuthorizationHeader(req.headers.authorization);
+        if (password) {
+          if (isPasswordValid(password, PASSWORD_HASH)) {
             return next();
           }
-          return res.status(401).json({
+          sendJson(res, 401, {
             error: 'Incorrect Password',
           });
+          return;
         }
 
-        return res.status(401).json({
+        sendJson(res, 401, {
           error: 'Not Logged In',
         });
+        return;
       }),
     );
 
@@ -254,8 +286,7 @@ module.exports = class Server {
         return config;
       }))
       .post('/api/wireguard/client', defineEventHandler(async (event) => {
-        const { name } = await readBody(event);
-        const { expiredDate } = await readBody(event);
+        const { name, expiredDate } = await readBody(event);
         await WireGuard.createClient({ name, expiredDate });
         return { success: true };
       }))
@@ -348,23 +379,31 @@ module.exports = class Server {
     // Check Prometheus credentials
     app.use(
       fromNodeMiddleware((req, res, next) => {
-        if (!requiresPrometheusPassword || !req.url.startsWith('/metrics')) {
+        const requestUrl = typeof req.url === 'string' ? req.url : '';
+        if (!requiresPrometheusPassword || !requestUrl.startsWith('/metrics')) {
           return next();
         }
+
         const user = basicAuth(req);
-        if (!user) {
-          res.statusCode = 401;
-          return { error: 'Not Logged In' };
+        if (!user || !user.pass) {
+          sendJson(res, 401, {
+            error: 'Not Logged In',
+          }, {
+            wwwAuthenticate: 'Basic realm="metrics"',
+          });
+          return;
         }
-        if (user.pass) {
-          if (isPasswordValid(user.pass, PROMETHEUS_METRICS_PASSWORD)) {
-            return next();
-          }
-          res.statusCode = 401;
-          return { error: 'Incorrect Password' };
+
+        if (isPasswordValid(user.pass, PROMETHEUS_METRICS_PASSWORD)) {
+          return next();
         }
-        res.statusCode = 401;
-        return { error: 'Not Logged In' };
+
+        sendJson(res, 401, {
+          error: 'Incorrect Password',
+        }, {
+          wwwAuthenticate: 'Basic realm="metrics"',
+        });
+        return;
       }),
     );
 
@@ -376,17 +415,23 @@ module.exports = class Server {
     routerPrometheusMetrics
       .get('/metrics', defineEventHandler(async (event) => {
         setHeader(event, 'Content-Type', 'text/plain');
-        if (ENABLE_PROMETHEUS_METRICS === 'true') {
-          return WireGuard.getMetrics();
+        if (ENABLE_PROMETHEUS_METRICS !== 'true') {
+          event.node.res.statusCode = 404;
+          return '# Prometheus metrics are disabled. Set ENABLE_PROMETHEUS_METRICS=true.\n';
         }
-        return '';
+
+        return WireGuard.getMetrics();
       }))
       .get('/metrics/json', defineEventHandler(async (event) => {
         setHeader(event, 'Content-Type', 'application/json');
-        if (ENABLE_PROMETHEUS_METRICS === 'true') {
-          return WireGuard.getMetricsJSON();
+        if (ENABLE_PROMETHEUS_METRICS !== 'true') {
+          event.node.res.statusCode = 404;
+          return {
+            error: 'Prometheus metrics are disabled. Set ENABLE_PROMETHEUS_METRICS=true.',
+          };
         }
-        return '';
+
+        return WireGuard.getMetricsJSON();
       }));
 
     // backup_restore

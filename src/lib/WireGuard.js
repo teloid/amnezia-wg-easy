@@ -37,6 +37,11 @@ const {
   H4,
 } = require('../config');
 
+const escapePrometheusLabelValue = (value) => String(value ?? '')
+  .replace(/\\/g, '\\\\')
+  .replace(/\n/g, '\\n')
+  .replace(/"/g, '\\"');
+
 module.exports = class WireGuard {
 
   async __buildConfig() {
@@ -476,7 +481,12 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
     let wireguardSentBytes = '';
     let wireguardReceivedBytes = '';
     let wireguardLatestHandshakeSeconds = '';
-    for (const client of Object.values(clients)) {
+    for (const client of clients) {
+      const labels = `interface="wg0",enabled="${client.enabled}",address="${escapePrometheusLabelValue(client.address)}",name="${escapePrometheusLabelValue(client.name)}"`;
+      const latestHandshakeAtSeconds = client.latestHandshakeAt
+        ? Math.floor(new Date(client.latestHandshakeAt).getTime() / 1000)
+        : 0;
+
       wireguardPeerCount++;
       if (client.enabled === true) {
         wireguardEnabledPeersCount++;
@@ -484,9 +494,9 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
       if (client.endpoint !== null) {
         wireguardConnectedPeersCount++;
       }
-      wireguardSentBytes += `wireguard_sent_bytes{interface="wg0",enabled="${client.enabled}",address="${client.address}",name="${client.name}"} ${Number(client.transferTx)}\n`;
-      wireguardReceivedBytes += `wireguard_received_bytes{interface="wg0",enabled="${client.enabled}",address="${client.address}",name="${client.name}"} ${Number(client.transferRx)}\n`;
-      wireguardLatestHandshakeSeconds += `wireguard_latest_handshake_seconds{interface="wg0",enabled="${client.enabled}",address="${client.address}",name="${client.name}"} ${client.latestHandshakeAt ? (new Date().getTime() - new Date(client.latestHandshakeAt).getTime()) / 1000 : 0}\n`;
+      wireguardSentBytes += `wireguard_sent_bytes{${labels}} ${Number(client.transferTx)}\n`;
+      wireguardReceivedBytes += `wireguard_received_bytes{${labels}} ${Number(client.transferRx)}\n`;
+      wireguardLatestHandshakeSeconds += `wireguard_latest_handshake_seconds{${labels}} ${latestHandshakeAtSeconds}\n`;
     }
 
     let returnText = '# HELP wg-easy and wireguard metrics\n';
@@ -523,7 +533,7 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
     let wireguardPeerCount = 0;
     let wireguardEnabledPeersCount = 0;
     let wireguardConnectedPeersCount = 0;
-    for (const client of Object.values(clients)) {
+    for (const client of clients) {
       wireguardPeerCount++;
       if (client.enabled === true) {
         wireguardEnabledPeersCount++;

@@ -2,6 +2,8 @@
 /wg0.conf
 /wg0.json
 /src/node_modules
+.env
+.env.local
 .DS_Store
 *.swp
 .idea
